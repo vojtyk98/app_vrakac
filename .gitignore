@@ -82,3 +82,12 @@ ios/Pods/
 *.jks
 android/keystore.properties
 android/gradle.properties
+node_modules/
+android/build/
+android/app/build/
+ios/build/
+ios/Pods/
+*.keystore
+*.jks
+android/keystore.properties
+android/gradle.properties
