@@ -1,19 +1,3 @@
 {
-  "compilerOptions": {
-    "target": "es2020",
-    "module": "esnext",
-    "lib": ["ES2020", "ES2020.BigInt", "DOM"],
-    "jsx": "react",
-    "moduleResolution": "node",
-    "esModuleInterop": true,
-    "resolveJsonModule": true,
-    "allowJs": true,
-    "isolatedModules": true,
-    "noEmit": true,
-    "strict": true,
-    "skipLibCheck": true,
-    "types": ["react", "react-native"]
-  },
-  "include": ["./src/**/*", "./*.ts", "./*.tsx"],
-  "exclude": ["node_modules", "android", "ios"]
+  "extends": "@react-native/typescript-config"
 }

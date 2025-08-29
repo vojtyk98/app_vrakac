@@ -1,12 +1,12 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
-  View,
+  Alert,
+  ScrollView,
+  StyleSheet,
   Text,
   TextInput,
-  ScrollView,
-  Alert,
-  StyleSheet,
   TouchableOpacity,
+  View,
   Platform,
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -19,8 +19,8 @@ export type SellerFormData = {
   email: string;
   phone: string;
   idNumber: string;
-  accountNumber: string;
-  amount: string;
+  accountNumber: string; // lokální formát 123456789/XXXX
+  amount: string;        // číslo, ale posíláme jako text
   qrBase64?: string;
 };
 
@@ -30,33 +30,33 @@ type SellerFormProps = {
 };
 
 const COLORS = {
-  blue: '#39A9DB',   // světlejší modrá z loga
-  green: '#8BC34A',  // světlejší zelená z loga
+  blue: '#39A9DB',
+  green: '#8BC34A',
   text: '#000000',
-  label: '#1d1d1d',
   border: '#A8CBE6',
   surface: '#FFFFFF',
-  bg: '#F5FAFF',
-  error: '#D32F2F',
+  bg: '#F7FBFF',
+  muted: '#6B7280',
 };
 
+// CZ účet -> IBAN (BBAN + kontrolní číslo)
 const computeCzIban = (local: string): string => {
   const [acc, bank] = local.split('/');
-  const padded = acc.padStart(16, '0');
-  const bban = bank + padded;
-  const rearr = bban + 'CZ00';
-  const numeric = rearr.replace(/[A-Z]/g, (ch) => (ch.charCodeAt(0) - 55).toString());
+  const padded = (acc || '').padStart(16, '0'); // 16 číslic pro BBAN část účtu
+  const bban = `${bank}${padded}`;
+  const rearr = `${bban}CZ00`;
+  const numeric = rearr.replace(/[A-Z]/g, ch => (ch.charCodeAt(0) - 55).toString());
   const cs = (98n - (BigInt(numeric) % 97n)).toString().padStart(2, '0');
   return `CZ${cs}${bban}`;
 };
 
+// SPD payload (verze 1.0)
 const makeSpdPayload = (iban: string, amount: string, name: string, currency = 'CZK'): string => {
-  const parts = ['SPD*1.0', `ACC:${iban}`, `RN:${name}`];
-  parts.push(`AM:${parseFloat(amount).toFixed(2)}`, `CC:${currency}`);
+  const parts = ['SPD*1.0', `ACC:${iban}`, `RN:${name}`, `AM:${parseFloat(amount).toFixed(2)}`, `CC:${currency}`];
   return parts.join('*');
 };
 
-// vloží tečky do data ve formátu DD.MM.RRRR během psaní
+// formátování data během psaní: DD.MM.RRRR
 const formatBirthDate = (input: string): string => {
   const digits = input.replace(/\D/g, '').slice(0, 8);
   if (digits.length <= 2) return digits;
@@ -65,23 +65,25 @@ const formatBirthDate = (input: string): string => {
 };
 
 const SellerForm: React.FC<SellerFormProps> = ({ onNext, initialData }) => {
-  const [firstName, setFirstName] = useState(initialData?.firstName || '');
-  const [lastName, setLastName] = useState(initialData?.lastName || '');
-  const [birthDate, setBirthDate] = useState(initialData?.birthDate || '');
-  const [email, setEmail] = useState(initialData?.email || '');
-  const [phone, setPhone] = useState(initialData?.phone || '');
-  const [idNumber, setIdNumber] = useState(initialData?.idNumber || '');
-  const [accountNumber, setAccountNumber] = useState(initialData?.accountNumber || '');
-  const [amount, setAmount] = useState(initialData?.amount || '');
+  const [firstName, setFirstName]   = useState(initialData?.firstName   || '');
+  const [lastName, setLastName]     = useState(initialData?.lastName    || '');
+  const [birthDate, setBirthDate]   = useState(initialData?.birthDate   || '');
+  const [email, setEmail]           = useState(initialData?.email       || '');
+  const [phone, setPhone]           = useState(initialData?.phone       || '');
+  const [idNumber, setIdNumber]     = useState(initialData?.idNumber    || '');
+  const [accountNumber, setAccount] = useState(initialData?.accountNumber || '');
+  const [amount, setAmount]         = useState(initialData?.amount      || '');
   const [showDatePicker, setShowDatePicker] = useState(false);
+
   const [spdString, setSpdString] = useState('');
-  const [qrBase64, setQrBase64] = useState<string>('');
+  const [qrBase64, setQrBase64]   = useState<string>('');
   const qrRef = useRef<QRCode | null>(null);
 
-  const accRaw = accountNumber.replace(/\s+/g, '');
-  const accValid = /^\d{1,10}\/\d{4}$/.test(accRaw);
-  const allValid =
-    !!firstName && !!lastName && !!birthDate && !!email && !!phone && !!idNumber && accValid && !!amount;
+  const accRaw    = (accountNumber || '').replace(/\s+/g, '');
+  const accValid  = /^\d{1,10}\/\d{4}$/.test(accRaw);
+  const allValid  =
+    !!firstName && !!lastName && !!birthDate && !!email && !!phone &&
+    !!idNumber && accValid && !!amount;
 
   useEffect(() => {
     if (accValid && amount && firstName && lastName) {
@@ -90,6 +92,8 @@ const SellerForm: React.FC<SellerFormProps> = ({ onNext, initialData }) => {
         const fullName = `${firstName} ${lastName}`;
         const spd = makeSpdPayload(iban, amount, fullName);
         setSpdString(spd);
+
+        // stáhnout Base64 z QR (mírné zpoždění, než se vykreslí)
         setTimeout(() => {
           if (qrRef.current && (qrRef.current as any).toDataURL) {
             (qrRef.current as any).toDataURL((data: string) => setQrBase64(data));
@@ -119,15 +123,10 @@ const SellerForm: React.FC<SellerFormProps> = ({ onNext, initialData }) => {
       return;
     }
     onNext({
-      firstName,
-      lastName,
-      birthDate,
-      email,
-      phone,
-      idNumber,
+      firstName, lastName, birthDate, email, phone, idNumber,
       accountNumber: accRaw,
       amount,
-      qrBase64: qrBase64 ? qrBase64 : undefined,
+      qrBase64: qrBase64 || undefined,
     });
   };
 
@@ -136,34 +135,20 @@ const SellerForm: React.FC<SellerFormProps> = ({ onNext, initialData }) => {
       <Text style={styles.heading}>Prodávající</Text>
 
       <Text style={styles.label}>Jméno</Text>
-      <TextInput
-        style={styles.input}
-        value={firstName}
-        onChangeText={setFirstName}
-        placeholder="Jméno"
-        placeholderTextColor="#666"
-        autoCapitalize="words"
-      />
+      <TextInput style={styles.input} value={firstName} onChangeText={setFirstName} placeholder="Jméno" placeholderTextColor={COLORS.muted} autoCapitalize="words" />
 
       <Text style={styles.label}>Příjmení</Text>
-      <TextInput
-        style={styles.input}
-        value={lastName}
-        onChangeText={setLastName}
-        placeholder="Příjmení"
-        placeholderTextColor="#666"
-        autoCapitalize="words"
-      />
+      <TextInput style={styles.input} value={lastName} onChangeText={setLastName} placeholder="Příjmení" placeholderTextColor={COLORS.muted} autoCapitalize="words" />
 
       <Text style={styles.label}>Datum narození</Text>
       <View style={styles.dateRow}>
         <TextInput
           style={[styles.input, { flex: 1 }]}
           value={birthDate}
-          onChangeText={(text) => setBirthDate(formatBirthDate(text))}
+          onChangeText={(t) => setBirthDate(formatBirthDate(t))}
           placeholder="DD.MM.RRRR"
-          placeholderTextColor="#666"
-          keyboardType="numbers-and-punctuation"
+          placeholderTextColor={COLORS.muted}
+          keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
           maxLength={10}
         />
         <TouchableOpacity onPress={() => setShowDatePicker(true)} style={styles.dateButton}>
@@ -181,42 +166,21 @@ const SellerForm: React.FC<SellerFormProps> = ({ onNext, initialData }) => {
       )}
 
       <Text style={styles.label}>E-mail</Text>
-      <TextInput
-        style={styles.input}
-        value={email}
-        onChangeText={setEmail}
-        placeholder="email@example.com"
-        placeholderTextColor="#666"
-        keyboardType="email-address"
-        autoCapitalize="none"
-      />
+      <TextInput style={styles.input} value={email} onChangeText={setEmail} placeholder="email@example.com" placeholderTextColor={COLORS.muted} keyboardType="email-address" autoCapitalize="none" />
 
       <Text style={styles.label}>Telefon</Text>
-      <TextInput
-        style={styles.input}
-        value={phone}
-        onChangeText={setPhone}
-        placeholder="+420 777 123 456"
-        placeholderTextColor="#666"
-        keyboardType="phone-pad"
-      />
+      <TextInput style={styles.input} value={phone} onChangeText={setPhone} placeholder="+420 777 123 456" placeholderTextColor={COLORS.muted} keyboardType="phone-pad" />
 
       <Text style={styles.label}>Číslo dokladu</Text>
-      <TextInput
-        style={styles.input}
-        value={idNumber}
-        onChangeText={setIdNumber}
-        placeholder="OP nebo pas"
-        placeholderTextColor="#666"
-      />
+      <TextInput style={styles.input} value={idNumber} onChangeText={setIdNumber} placeholder="OP nebo pas" placeholderTextColor={COLORS.muted} />
 
       <Text style={styles.label}>Číslo účtu</Text>
       <TextInput
         style={styles.input}
         value={accountNumber}
-        onChangeText={(t) => setAccountNumber(t.replace(/\s+/g, ''))}
+        onChangeText={(t) => setAccount(t.replace(/\s+/g, ''))}
         placeholder="1974047020/3030"
-        placeholderTextColor="#666"
+        placeholderTextColor={COLORS.muted}
       />
 
       <Text style={styles.label}>Částka</Text>
@@ -225,7 +189,7 @@ const SellerForm: React.FC<SellerFormProps> = ({ onNext, initialData }) => {
         value={amount}
         onChangeText={(t) => setAmount(t.replace(',', '.'))}
         placeholder="10000.00"
-        placeholderTextColor="#666"
+        placeholderTextColor={COLORS.muted}
         keyboardType="decimal-pad"
       />
 
@@ -236,17 +200,13 @@ const SellerForm: React.FC<SellerFormProps> = ({ onNext, initialData }) => {
             <QRCode
               value={spdString}
               size={180}
-              getRef={(c) => {
-                qrRef.current = c;
-              }}
+              getRef={(c) => { qrRef.current = c; }}
             />
             <Text style={styles.amountLabel}>Částka: {parseFloat(amount || '0').toFixed(2)} Kč</Text>
-            <Text selectable style={styles.payloadText}>
-              {spdString}
-            </Text>
+            <Text selectable style={styles.payloadText}>{spdString}</Text>
           </>
         ) : (
-          <Text style={styles.errorText}>vyplňte údaje</Text>
+          <Text style={styles.errorText}>Vyplňte údaje</Text>
         )}
       </View>
 
@@ -261,26 +221,21 @@ const SellerForm: React.FC<SellerFormProps> = ({ onNext, initialData }) => {
 
 const styles = StyleSheet.create({
   container: { padding: 20, backgroundColor: COLORS.bg },
-  heading: { fontSize: 20, fontWeight: 'bold', marginBottom: 16, color: COLORS.text, textAlign: 'center' },
-  label: { fontWeight: '600', marginTop: 12, marginBottom: 6, color: COLORS.label },
+  heading: { fontSize: 20, fontWeight: 'bold', marginBottom: 16, color: COLORS.text },
+  label: { fontWeight: '600', marginTop: 10, marginBottom: 4, color: COLORS.text },
   input: {
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 8,
-    padding: 12,
-    backgroundColor: COLORS.surface,
-    color: COLORS.text,
+    borderWidth: 1, borderColor: COLORS.border, borderRadius: 8,
+    padding: 12, backgroundColor: COLORS.surface, color: COLORS.text,
   },
-
   dateRow: { flexDirection: 'row', alignItems: 'center' },
   dateButton: { marginLeft: 8, padding: 8, backgroundColor: COLORS.blue, borderRadius: 8 },
-  dateIcon: { fontSize: 18, color: '#fff' },
+  dateIcon: { fontSize: 16, color: '#fff' },
 
-  qrLabel: { fontWeight: 'bold', marginTop: 18, textAlign: 'center', color: COLORS.label },
+  qrLabel: { fontWeight: 'bold', marginTop: 18, textAlign: 'center', color: COLORS.text },
   qrContainer: { alignItems: 'center', marginVertical: 16 },
   amountLabel: { fontSize: 18, fontWeight: 'bold', marginTop: 12, color: COLORS.text },
-  payloadText: { fontSize: 10, color: '#555', marginTop: 4 },
-  errorText: { color: COLORS.error, textAlign: 'center', marginTop: 8 },
+  payloadText: { fontSize: 10, color: COLORS.muted, marginTop: 4 },
+  errorText: { color: '#D32F2F', textAlign: 'center', marginTop: 8 },
 
   buttonRow: { marginTop: 24 },
   button: { backgroundColor: COLORS.green, padding: 14, borderRadius: 24, alignItems: 'center' },

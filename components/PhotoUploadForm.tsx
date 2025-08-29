@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -17,8 +17,6 @@ import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 
 import { SellerFormData } from './SellerForm';
 import { CarData } from './CarForm';
-
-// <<< DŮLEŽITÉ: používáme TVŮJ loader z logos.base64.ts (PLURAL)
 import { getLogoTopRightSrc, getLogoBottomLeftSrc } from './logos.base64';
 
 type PhotoUploadRoute = RouteProp<
@@ -38,6 +36,17 @@ const COLORS = {
   bg: '#FFFFFF',
 };
 
+// ——— utils ———
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const stripDiacritics = (s: string) =>
+  (s || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '');
+
+const safeName = (s: string) =>
+  stripDiacritics(s).replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '');
+
 const base64SizeBytes = (base64: string) => {
   const cleaned = (base64 || '').replace(/^data:.*;base64,/, '');
   return Math.ceil((cleaned.length * 3) / 4);
@@ -48,25 +57,37 @@ const tryCompress = async (uri: string, maxDim: number, quality: number): Promis
     const resized = await ImageResizer.createResizedImage(uri, maxDim, maxDim, 'JPEG', quality, 0);
     const path = resized.uri.startsWith('file://') ? resized.uri.replace('file://', '') : resized.uri;
     return await RNFS.readFile(path, 'base64');
-  } catch (err) {
+  } catch (e) {
     try {
       const raw = uri.startsWith('file://') ? uri.replace('file://', '') : uri;
       return await RNFS.readFile(raw, 'base64');
     } catch {
-      console.warn('Nepovedlo se načíst obrázek ani fallback:', err);
+      console.warn('Nepovedlo se načíst obrázek ani fallback:', e);
       return '';
     }
   }
 };
 
-// bezpečný text do názvu souboru (bez diakritiky, mezery -> _)
-const slugify = (s: string) =>
-  (s || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^A-Za-z0-9_-]+/g, '_')
-    .replace(/_+/g, '_')
-    .replace(/^_+|_+$/g, '');
+// Robustní vytvoření PDF (s fallbackem přes base64 → uložení ručně)
+const makePdf = async (html: string, fileNameOnly: string): Promise<string> => {
+  // 1) standardní cesta
+  try {
+    const { filePath } = await RNHTMLtoPDF.convert({ html, fileName: fileNameOnly });
+    if (!filePath) throw new Error('convert() nevrátil filePath');
+    return filePath;
+  } catch (e1) {
+    console.warn('PDF vyráběné convert() selhalo, zkouším fallback přes base64.', e1);
+  }
+
+  // 2) fallback – získám base64 a uložíme do cache ručně
+  await sleep(250);
+  const { base64 } = await RNHTMLtoPDF.convert({ html, fileName: fileNameOnly, base64: true });
+  if (!base64) throw new Error('convert() bez filePath ani base64 – končím');
+
+  const outPath = `${RNFS.CachesDirectoryPath}/${fileNameOnly}.pdf`;
+  await RNFS.writeFile(outPath, base64, 'base64');
+  return outPath;
+};
 
 const PhotoUploadForm: React.FC = () => {
   const navigation = useNavigation<any>();
@@ -79,6 +100,20 @@ const PhotoUploadForm: React.FC = () => {
   const [tpFrontPhoto, setTpFrontPhoto] = useState<string | null>(null);
   const [tpBackPhoto, setTpBackPhoto] = useState<string | null>(null);
 
+  // přednačti loga (cache)
+  useEffect(() => {
+    (async () => {
+      try {
+        await Promise.all([
+          getLogoTopRightSrc(REQUIRE_TOP_LOGO),
+          getLogoBottomLeftSrc(REQUIRE_BOTTOM_LOGO),
+        ]);
+      } catch (e) {
+        console.warn('Přednačtení log selhalo (nevadí, zkusí se později):', e);
+      }
+    })();
+  }, []);
+
   const allPhotos =
     !!frontPhoto && !!interiorPhoto && !!vinPhoto && !!tpFrontPhoto && !!tpBackPhoto;
 
@@ -86,8 +121,8 @@ const PhotoUploadForm: React.FC = () => {
     try {
       const res = await launchImageLibrary({ mediaType: 'photo', quality: 0.8, selectionLimit: 1 });
       if (res.assets && res.assets[0].uri) setter(res.assets[0].uri);
-    } catch (err) {
-      console.warn('Chyba při výběru fotky:', err);
+    } catch (e) {
+      console.warn('Chyba při výběru fotky:', e);
     }
   };
 
@@ -96,9 +131,7 @@ const PhotoUploadForm: React.FC = () => {
     logos: { topSrc: string; bottomSrc: string }
   ): string => {
     const qr = sellerData.qrBase64 || '';
-    const qrTag = qr
-      ? `<div style="margin:8px 0;"><img src="data:image/png;base64,${qr}" width="140" alt="QR platba"/></div>`
-      : '';
+    const qrTag = qr ? `<div style="margin:8px 0;"><img src="data:image/png;base64,${qr}" width="140" alt="QR platba"/></div>` : '';
 
     const headerBlock = `
       <div style="display:grid; grid-template-columns: 3fr 1fr; column-gap:16px; align-items:start;">
@@ -149,6 +182,7 @@ const PhotoUploadForm: React.FC = () => {
               <tr><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Email</th><td style="padding:6px; border-bottom:1px solid #eee;">${sellerData.email}</td></tr>
               <tr><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Telefon</th><td style="padding:6px; border-bottom:1px solid #eee;">${sellerData.phone}</td></tr>
               <tr><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Doklad</th><td style="padding:6px; border-bottom:1px solid #eee;">${sellerData.idNumber}</td></tr>
+
               <tr><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Účet (lokální)</th><td style="padding:6px; border-bottom:1px solid #eee;">${sellerData.accountNumber}</td></tr>
               <tr><th style="text-align:left; padding:6px;">Částka</th><td style="padding:6px; font-weight:600;">${sellerData.amount} Kč</td></tr>
             </table>
@@ -162,8 +196,11 @@ const PhotoUploadForm: React.FC = () => {
               <tr><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">VIN</th><td style="padding:6px; border-bottom:1px solid #eee;">${carData.vin}</td></tr>
               <tr><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Provozní hm.</th><td style="padding:6px; border-bottom:1px solid #eee;">${carData.weight} kg</td></tr>
               <tr><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Pohotovostní hm.</th><td style="padding:6px; border-bottom:1px solid #eee;">${carData.curbWeight} kg</td></tr>
+
               <tr><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Katalyzátor</th><td style="padding:6px; border-bottom:1px solid #eee;">${carData.catalyst ? 'Ano' : 'Ne'}</td></tr>
-              <tr><th style="text-align:left; padding:6px;">Rádio / Depozit</th><td style="padding:6px;">${carData.radio ? 'Ano' : 'Ne'} / ${carData.deposit ? 'Ano' : 'Ne'}</td></tr>
+              <tr><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Baterie</th><td style="padding:6px; border-bottom:1px solid #eee;">${carData.battery ? 'Ano' : 'Ne'}</td></tr>
+              <tr><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Rádio</th><td style="padding:6px; border-bottom:1px solid #eee;">${carData.radio ? 'Ano' : 'Ne'}</td></tr>
+              <tr><th style="text-align:left; padding:6px;">Depozit</th><td style="padding:6px;">${carData.deposit ? 'Ano' : 'Ne'}</td></tr>
             </table>
           </div>
         </div>
@@ -199,9 +236,7 @@ const PhotoUploadForm: React.FC = () => {
         </div>
       </div>
     `;
-    const logoBottomLeft = logos.bottomSrc
-      ? `<img src="${logos.bottomSrc}" width="120" style="position:fixed; bottom:16px; left:16px;" />`
-      : '';
+    const logoBottomLeft = logos.bottomSrc ? `<img src="${logos.bottomSrc}" width="120" style="position:fixed; bottom:16px; left:16px;" />` : '';
     const qr = seller.qrBase64 || '';
     const qrTag = qr ? `<img src="data:image/png;base64,${qr}" width="120" alt="QR platba"/>` : '';
 
@@ -242,13 +277,11 @@ const PhotoUploadForm: React.FC = () => {
     }
 
     try {
-      // 1) Načti loga přes tvůj loader
       const [topSrc, bottomSrc] = await Promise.all([
         getLogoTopRightSrc(REQUIRE_TOP_LOGO),
         getLogoBottomLeftSrc(REQUIRE_BOTTOM_LOGO),
       ]);
 
-      // 2) Připrav fotky + komprese
       const photoEntries: { key: string; uri: string | null; base64?: string }[] = [
         { key: 'front', uri: frontPhoto },
         { key: 'interior', uri: interiorPhoto },
@@ -302,24 +335,23 @@ const PhotoUploadForm: React.FC = () => {
         }
       }
 
-      // 3) Názvy souborů s jménem a SPZ/VIN
-      const namePart = `${slugify(sellerData.lastName)}_${slugify(sellerData.firstName)}`;
-      const vehPart = slugify(carData.spz || carData.vin || 'bez_id');
+      // — názvová část: SPZ/VIN + Příjmení_Jméno —
+      const person = `${sellerData.lastName || ''}_${sellerData.firstName || ''}`;
+      const idPart = carData.spz || carData.vin || person;
+      const fileBaseProtocol = `predavaci_protokol_${safeName(idPart)}_${safeName(person)}`;
+      const fileBaseSummary  = `souhrn_predani_${safeName(person)}`;
 
-      // 4) Protokol
+      // 1) Protokol
       const protocolHTML = buildProtocolHTML(photoEntries, { topSrc, bottomSrc });
-      const { filePath: protocolPath } = await RNHTMLtoPDF.convert({
-        html: protocolHTML,
-        fileName: `predavaci_protokol_${namePart}_${vehPart}`,
-      });
+      const protocolPath = await makePdf(protocolHTML, fileBaseProtocol);
 
       try {
         await Share.open({
           title: `Předávací protokol - ${sellerData.lastName}`,
           subject: `Předávací protokol - ${sellerData.lastName}`,
           message: 'Předávací protokol',
-          url: 'file://' + protocolPath!,
-          email: 'vojtamd@seznam.cz,vojtamasojidek@seznam.cz',
+          url: 'file://' + protocolPath,
+          email: 'turnov@zlikvidujauto.cz,alfeco@seznam.cz',
         });
       } catch (shareErr: any) {
         const msg = (shareErr && shareErr.message) || '';
@@ -329,19 +361,16 @@ const PhotoUploadForm: React.FC = () => {
         }
       }
 
-      // 5) Souhrn
+      // 2) Souhrn pro prodávajícího
       const summaryHTML = buildSummaryHTML(sellerData, carData, { topSrc, bottomSrc });
-      const { filePath: summaryPath } = await RNHTMLtoPDF.convert({
-        html: summaryHTML,
-        fileName: `souhrn_predani_${namePart}_${vehPart}`,
-      });
+      const summaryPath = await makePdf(summaryHTML, fileBaseSummary);
 
       try {
         await Share.open({
           title: `Souhrn předání vozidla - ${sellerData.lastName}`,
           subject: `Souhrn předání vozidla - ${sellerData.lastName}`,
           message: 'Souhrn předání vozidla k ekologické likvidaci',
-          url: 'file://' + summaryPath!,
+          url: 'file://' + summaryPath,
           email: sellerData.email,
         });
       } catch (shareErr: any) {
@@ -352,12 +381,12 @@ const PhotoUploadForm: React.FC = () => {
         }
       }
 
-      // 6) Dotaz na reset – "Ne" NIC nedělá
+      // 3) Dotaz na smazání dat
       Alert.alert(
         'Hotovo',
         'Chcete smazat vyplněná data a začít od začátku?',
         [
-          { text: 'Ne', style: 'cancel' },
+          { text: 'Ne', style: 'cancel' }, // jen zavře dialog, data zůstanou
           {
             text: 'Ano',
             style: 'destructive',
@@ -368,7 +397,7 @@ const PhotoUploadForm: React.FC = () => {
               }),
           },
         ],
-        { cancelable: false }
+        { cancelable: true }
       );
     } catch (err) {
       console.error('Chyba ve finish:', err);

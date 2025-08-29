@@ -73,3 +73,12 @@ yarn-error.log
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+node_modules/
+android/build/
+android/app/build/
+ios/build/
+ios/Pods/
+*.keystore
+*.jks
+android/keystore.properties
+android/gradle.properties
